@@ -1,18 +1,14 @@
 """
-Pydantic Parser - Python/Pydantic Schema 提取器
-从 Python 代码中提取 Pydantic Model 定义
+BMAD-Fullstack Pydantic Parser
+Phase 2 MVP - Python/Pydantic Schema 提取器
 """
 
 import ast
 import os
-import re
 from pathlib import Path
 from typing import List, Dict, Optional, Any, Union
-from dataclasses import dataclass
 
-from ..api_contract.types import (
-    NormalizedSchema, FieldInfo, FieldType, ProjectConfig
-)
+from api_contract.types import NormalizedSchema, FieldInfo, FieldType
 
 
 class PydanticModelVisitor(ast.NodeVisitor):
@@ -69,39 +65,72 @@ class PydanticModelVisitor(ast.NodeVisitor):
         if self.current_schema is None:
             return
         
-        field_info = FieldInfo(
-            source_file=self.filename,
-            source_language="python",
-            source_line=getattr(node, 'lineno', 0)
-        )
+        # 先提取基本信息
+        field_name = ""
+        field_type = FieldType.ANY
+        original_type = ""
+        required = True
+        default = None
+        description = ""
         
         if isinstance(node, ast.AnnAssign):
             # 类型注解赋值（如：name: str）
             if isinstance(node.target, ast.Name):
-                field_info.name = node.target.id
-                field_info.field_type = self._parse_type_annotation(node.annotation)
-                field_info.original_type = self._get_type_string(node.annotation)
+                field_name = node.target.id
+                field_type = self._parse_type_annotation(node.annotation)
+                original_type = self._get_type_string(node.annotation)
                 
                 # 检查是否有默认值
                 if node.value:
-                    field_info.required = False
-                    field_info.default = self._extract_default_value(node.value)
-                    
-                    # 检查是否是 Field(...) 定义
-                    if isinstance(node.value, ast.Call):
-                        field_info = self._parse_field_call(node.value, field_info)
+                    required = False
+                    default = self._extract_default_value(node.value)
         
         elif isinstance(node, ast.Assign):
             # 普通赋值（如：name = Field(...)）
             for target in node.targets:
                 if isinstance(target, ast.Name):
-                    field_info.name = target.id
+                    field_name = target.id
                     
                     if isinstance(node.value, ast.Call):
-                        field_info = self._parse_field_call(node.value, field_info)
+                        # 解析 Field(...) 调用
+                        call_info = self._parse_field_call_simple(node.value)
+                        field_type = call_info.get('field_type', FieldType.ANY)
+                        required = call_info.get('required', True)
+                        description = call_info.get('description', '')
         
-        if field_info.name:
+        # 创建 FieldInfo
+        if field_name:
+            field_info = FieldInfo(
+                name=field_name,
+                field_type=field_type,
+                original_type=original_type,
+                required=required,
+                default=default,
+                description=description,
+                source_file=self.filename,
+                source_language="python",
+                source_line=getattr(node, 'lineno', 0)
+            )
             self.current_schema.add_field(field_info)
+    
+    def _parse_field_call_simple(self, node: ast.Call) -> dict:
+        """简单解析 Field(...) 调用"""
+        result = {
+            'field_type': FieldType.ANY,
+            'required': True,
+            'description': ''
+        }
+        
+        if isinstance(node.func, ast.Name) and node.func.id == 'Field':
+            for keyword in node.keywords:
+                if keyword.arg == 'description':
+                    result['description'] = self._extract_string_value(keyword.value)
+                elif keyword.arg == 'default':
+                    result['required'] = False
+                elif keyword.arg == 'default_factory':
+                    result['required'] = False
+        
+        return result
     
     def _parse_type_annotation(self, node: ast.AST) -> FieldType:
         """解析类型注解为 FieldType"""
@@ -152,11 +181,6 @@ class PydanticModelVisitor(ast.NodeVisitor):
             'Any': FieldType.ANY,
             'None': FieldType.NULL,
             'NoneType': FieldType.NULL,
-            'datetime': FieldType.DATETIME,
-            'date': FieldType.DATE,
-            'UUID': FieldType.UUID,
-            'EmailStr': FieldType.EMAIL,
-            'HttpUrl': FieldType.URL,
         }
         
         # 检查是否是数组类型
@@ -165,28 +189,13 @@ class PydanticModelVisitor(ast.NodeVisitor):
         
         # 检查是否是可选类型
         if type_str.startswith('Optional['):
-            inner = type_str[9:-1]  # 提取 Optional[...] 内部
-            return self._map_python_type_to_field_type(inner)
+            return FieldType.OPTIONAL
         
         # 检查是否是联合类型
         if '|' in type_str or 'Union[' in type_str:
             return FieldType.UNION
         
         return type_mapping.get(type_str, FieldType.ANY)
-    
-    def _parse_field_call(self, node: ast.Call, field_info: FieldInfo) -> FieldInfo:
-        """解析 Field(...) 调用"""
-        if isinstance(node.func, ast.Name) and node.func.id == 'Field':
-            for keyword in node.keywords:
-                if keyword.arg == 'description':
-                    field_info.description = self._extract_string_value(keyword.value)
-                elif keyword.arg == 'default':
-                    field_info.default = self._extract_default_value(keyword.value)
-                    field_info.required = False
-                elif keyword.arg == 'default_factory':
-                    field_info.required = False
-        
-        return field_info
     
     def _extract_default_value(self, node: ast.AST) -> Any:
         """提取默认值"""
@@ -207,19 +216,31 @@ class PydanticModelVisitor(ast.NodeVisitor):
         """提取字符串值"""
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             return node.value
-        elif isinstance(node, ast.Str):
-            return node.s
         return ""
 
 
 class PydanticSchemaExtractor:
     """Pydantic Schema 提取器"""
     
-    def __init__(self, project_config: ProjectConfig):
-        self.config = project_config
+    def __init__(self, schema_path: str = ""):
+        """
+        初始化提取器
+        
+        Args:
+            schema_path: Schema 文件或目录路径
+        """
+        self.schema_path = schema_path
     
     def extract_from_file(self, file_path: str) -> List[NormalizedSchema]:
-        """从单个文件提取 Schema"""
+        """
+        从单个文件提取 Schema
+        
+        Args:
+            file_path: Python 文件路径
+            
+        Returns:
+            提取的 Schema 列表
+        """
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 source_code = f.read()
@@ -237,7 +258,15 @@ class PydanticSchemaExtractor:
             return []
     
     def extract_from_directory(self, dir_path: str) -> List[NormalizedSchema]:
-        """从目录提取所有 Schema"""
+        """
+        从目录提取所有 Schema
+        
+        Args:
+            dir_path: 目录路径
+            
+        Returns:
+            提取的 Schema 列表
+        """
         all_schemas = []
         
         for root, dirs, files in os.walk(dir_path):
@@ -253,18 +282,21 @@ class PydanticSchemaExtractor:
         return all_schemas
     
     def extract_all(self) -> Dict[str, NormalizedSchema]:
-        """提取项目中所有 Schema"""
-        schema_path = self.config.backend_schema_path
+        """
+        提取项目中所有 Schema
         
-        if not schema_path or not os.path.exists(schema_path):
+        Returns:
+            Schema 字典 {name: schema}
+        """
+        if not self.schema_path or not os.path.exists(self.schema_path):
             return {}
         
         all_schemas = []
         
-        if os.path.isfile(schema_path):
-            all_schemas = self.extract_from_file(schema_path)
+        if os.path.isfile(self.schema_path):
+            all_schemas = self.extract_from_file(self.schema_path)
         else:
-            all_schemas = self.extract_from_directory(schema_path)
+            all_schemas = self.extract_from_directory(self.schema_path)
         
         # 转换为字典
         return {schema.name: schema for schema in all_schemas}
@@ -272,7 +304,16 @@ class PydanticSchemaExtractor:
 
 # 便捷函数
 def extract_schemas_from_code(source_code: str, filename: str = "<unknown>") -> List[NormalizedSchema]:
-    """从代码字符串提取 Schema"""
+    """
+    从代码字符串提取 Schema
+    
+    Args:
+        source_code: Python 代码字符串
+        filename: 文件名（用于错误信息）
+        
+    Returns:
+        提取的 Schema 列表
+    """
     try:
         tree = ast.parse(source_code, filename=filename)
         visitor = PydanticModelVisitor(source_code, filename)
@@ -281,3 +322,18 @@ def extract_schemas_from_code(source_code: str, filename: str = "<unknown>") -> 
     except SyntaxError as e:
         print(f"语法错误: {e}")
         return []
+
+
+def extract_schemas_from_file(file_path: str) -> Dict[str, NormalizedSchema]:
+    """
+    从文件提取 Schema
+    
+    Args:
+        file_path: Python 文件路径
+        
+    Returns:
+        Schema 字典 {name: schema}
+    """
+    extractor = PydanticSchemaExtractor()
+    schemas = extractor.extract_from_file(file_path)
+    return {schema.name: schema for schema in schemas}

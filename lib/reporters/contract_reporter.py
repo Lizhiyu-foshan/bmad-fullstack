@@ -1,13 +1,13 @@
 """
-Contract Reporter - 契约检查报告生成器
-生成 Markdown/JSON/HTML 报告
+BMAD-EVO Contract Reporter
+Phase 2 MVP - 契约检查报告生成器
 """
 
 import json
-from typing import List, Optional
+from typing import List, Dict
 from datetime import datetime
 
-from ..api_contract.types import ContractReport, ContractIssue, Severity
+from api_contract.types import ContractReport, ContractIssue, Severity
 
 
 class ContractReporter:
@@ -16,8 +16,20 @@ class ContractReporter:
     def __init__(self, report: ContractReport):
         self.report = report
     
-    def to_markdown(self) -> str:
-        """生成 Markdown 格式报告"""
+    def to_markdown(self, language: str = "zh") -> str:
+        """
+        生成 Markdown 格式报告
+        
+        Args:
+            language: 语言 ("zh" 中文, "en" 英文)
+        """
+        if language == "zh":
+            return self._to_markdown_zh()
+        else:
+            return self._to_markdown_en()
+    
+    def _to_markdown_zh(self) -> str:
+        """生成中文 Markdown 报告"""
         lines = [
             "# API 契约检查报告",
             "",
@@ -27,19 +39,29 @@ class ContractReporter:
             "",
             "## 摘要",
             "",
-            f"```",
+            "```",
             f"{self.report.summary}",
-            f"```",
+            "```",
             "",
             "## Schema 统计",
             "",
             f"| 指标 | 数值 |",
             f"|------|------|",
-            f"| 总 Schema 数 | {self.report.total_schemas} |",
+            f"| 后端 Schema 数 | {self.report.backend_schemas_count} |",
+            f"| 前端类型数 | {self.report.frontend_schemas_count} |",
             f"| 匹配 Schema 对 | {self.report.matched_schemas} |",
-            f"| 不匹配数量 | {self.report.mismatched_schemas} |",
             "",
         ]
+        
+        # 建议
+        if self.report.recommendations:
+            lines.extend([
+                "## 建议",
+                "",
+            ])
+            for i, rec in enumerate(self.report.recommendations, 1):
+                lines.append(f"{i}. {rec}")
+            lines.append("")
         
         # 问题详情
         if self.report.issues:
@@ -53,7 +75,7 @@ class ContractReporter:
                 issues = [i for i in self.report.issues if i.severity == severity]
                 if issues:
                     lines.extend([
-                        f"### {self._get_severity_label(severity)} ({len(issues)} 个)",
+                        f"### {self._get_severity_label_zh(severity)} ({len(issues)} 个)",
                         "",
                     ])
                     
@@ -68,16 +90,126 @@ class ContractReporter:
                         if issue.field_name:
                             lines.append(f"- **字段**: `{issue.field_name}`")
                         
+                        if issue.detail:
+                            lines.append(f"- **详情**: {issue.detail}")
+                        
+                        if issue.backend_value:
+                            lines.append(f"- **后端**: `{issue.backend_value}`")
+                        
+                        if issue.frontend_value:
+                            lines.append(f"- **前端**: `{issue.frontend_value}`")
+                        
                         lines.extend([
                             "",
-                            f"**建议**: {issue.suggestion}",
+                            f"**修复建议**: {issue.suggestion}",
                             "",
                         ])
+                        
+                        if issue.backend_file:
+                            lines.append(f"📄 后端位置: `{issue.backend_file}:{issue.backend_line}`")
+                        
+                        if issue.frontend_file:
+                            lines.append(f"📄 前端位置: `{issue.frontend_file}:{issue.frontend_line}`")
+                        
+                        lines.append("")
         else:
             lines.extend([
                 "## 检查结果",
                 "",
                 "✅ **未发现任何问题，前后端契约完全一致！**",
+                "",
+            ])
+        
+        return "\n".join(lines)
+    
+    def _to_markdown_en(self) -> str:
+        """生成英文 Markdown 报告"""
+        lines = [
+            "# API Contract Check Report",
+            "",
+            f"**Check Time**: {self.report.timestamp}",
+            f"**Status**: {'✅ PASSED' if self.report.passed else '❌ FAILED'}",
+            f"**Contract Score**: {self.report.score}/100",
+            "",
+            "## Summary",
+            "",
+            "```",
+            f"{self.report.summary}",
+            "```",
+            "",
+            "## Schema Statistics",
+            "",
+            f"| Metric | Value |",
+            f"|--------|-------|",
+            f"| Backend Schemas | {self.report.backend_schemas_count} |",
+            f"| Frontend Types | {self.report.frontend_schemas_count} |",
+            f"| Matched Pairs | {self.report.matched_schemas} |",
+            "",
+        ]
+        
+        # Recommendations
+        if self.report.recommendations:
+            lines.extend([
+                "## Recommendations",
+                "",
+            ])
+            for i, rec in enumerate(self.report.recommendations, 1):
+                lines.append(f"{i}. {rec}")
+            lines.append("")
+        
+        # Issues
+        if self.report.issues:
+            lines.extend([
+                "## Issues",
+                "",
+            ])
+            
+            for severity in [Severity.CRITICAL, Severity.HIGH, Severity.MEDIUM, Severity.LOW]:
+                issues = [i for i in self.report.issues if i.severity == severity]
+                if issues:
+                    lines.extend([
+                        f"### {self._get_severity_label_en(severity)} ({len(issues)})",
+                        "",
+                    ])
+                    
+                    for i, issue in enumerate(issues, 1):
+                        lines.extend([
+                            f"#### {i}. {issue.message}",
+                            "",
+                            f"- **Rule**: `{issue.rule}`",
+                            f"- **Schema**: `{issue.schema_name}`",
+                        ])
+                        
+                        if issue.field_name:
+                            lines.append(f"- **Field**: `{issue.field_name}`")
+                        
+                        if issue.detail:
+                            lines.append(f"- **Detail**: {issue.detail}")
+                        
+                        if issue.backend_value:
+                            lines.append(f"- **Backend**: `{issue.backend_value}`")
+                        
+                        if issue.frontend_value:
+                            lines.append(f"- **Frontend**: `{issue.frontend_value}`")
+                        
+                        lines.extend([
+                            "",
+                            f"**Suggestion**: {issue.suggestion}",
+                            "",
+                        ])
+                        
+                        if issue.backend_file:
+                            lines.append(f"📄 Backend: `{issue.backend_file}:{issue.backend_line}`")
+                        
+                        if issue.frontend_file:
+                            lines.append(f"📄 Frontend: `{issue.frontend_file}:{issue.frontend_line}`")
+                        
+                        lines.append("")
+        else:
+            lines.extend([
+                "## Check Result",
+                "",
+                "✅ **No issues found. Backend and frontend contracts are fully consistent!**",
                 "",
             ])
         
@@ -91,157 +223,31 @@ class ContractReporter:
             "score": self.report.score,
             "summary": self.report.summary,
             "statistics": {
-                "total_schemas": self.report.total_schemas,
-                "matched_schemas": self.report.matched_schemas,
-                "mismatched_schemas": self.report.mismatched_schemas
+                "backend_schemas": self.report.backend_schemas_count,
+                "frontend_schemas": self.report.frontend_schemas_count,
+                "matched_schemas": self.report.matched_schemas
             },
-            "issues": [
-                {
-                    "severity": issue.severity.value,
-                    "rule": issue.rule,
-                    "message": issue.message,
-                    "schema_name": issue.schema_name,
-                    "field_name": issue.field_name,
-                    "suggestion": issue.suggestion
-                }
-                for issue in self.report.issues
-            ]
+            "recommendations": self.report.recommendations,
+            "issues": [issue.to_dict() for issue in self.report.issues]
         }
         
         return json.dumps(data, indent=2, ensure_ascii=False)
     
-    def to_html(self) -> str:
-        """生成 HTML 格式报告"""
-        severity_colors = {
-            Severity.CRITICAL: "#dc3545",
-            Severity.HIGH: "#fd7e14",
-            Severity.MEDIUM: "#ffc107",
-            Severity.LOW: "#6c757d"
-        }
+    def save(self, filepath: str, format: str = "markdown", language: str = "zh"):
+        """
+        保存报告到文件
         
-        html = f"""
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>API 契约检查报告</title>
-    <style>
-        body {{
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 20px;
-            line-height: 1.6;
-        }}
-        .header {{
-            background: {'#28a745' if self.report.passed else '#dc3545'};
-            color: white;
-            padding: 20px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-        }}
-        .score {{
-            font-size: 48px;
-            font-weight: bold;
-        }}
-        .summary {{
-            background: #f8f9fa;
-            padding: 15px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-        }}
-        .issue {{
-            border-left: 4px solid #ccc;
-            padding: 15px;
-            margin-bottom: 15px;
-            background: #fff;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-        }}
-        .issue-critical {{ border-left-color: {severity_colors[Severity.CRITICAL]}; }}
-        .issue-high {{ border-left-color: {severity_colors[Severity.HIGH]}; }}
-        .issue-medium {{ border-left-color: {severity_colors[Severity.MEDIUM]}; }}
-        .issue-low {{ border-left-color: {severity_colors[Severity.LOW]}; }}
-        .severity {{
-            display: inline-block;
-            padding: 2px 8px;
-            border-radius: 4px;
-            color: white;
-            font-size: 12px;
-            font-weight: bold;
-        }}
-        table {{
-            width: 100%;
-            border-collapse: collapse;
-            margin: 20px 0;
-        }}
-        th, td {{
-            border: 1px solid #dee2e6;
-            padding: 12px;
-            text-align: left;
-        }}
-        th {{
-            background: #e9ecef;
-            font-weight: 600;
-        }}
-    </style>
-</head>
-<body>
-    <div class="header">
-        <h1>API 契约检查报告</h1>
-        <div class="score">{self.report.score}/100</div>
-        <p>{'✅ 通过' if self.report.passed else '❌ 未通过'} | 检查时间: {self.report.timestamp}</p>
-    </div>
-    
-    <div class="summary">
-        <h2>摘要</h2>
-        <pre>{self.report.summary}</pre>
-    </div>
-    
-    <h2>Schema 统计</h2>
-    <table>
-        <tr><th>指标</th><th>数值</th></tr>
-        <tr><td>总 Schema 数</td><td>{self.report.total_schemas}</td></tr>
-        <tr><td>匹配 Schema 对</td><td>{self.report.matched_schemas}</td></tr>
-        <tr><td>不匹配数量</td><td>{self.report.mismatched_schemas}</td></tr>
-    </table>
-    
-    <h2>问题详情 ({len(self.report.issues)} 个)</h2>
-"""
-        
-        for issue in self.report.issues:
-            severity_class = f"issue-{issue.severity.value.lower()}"
-            severity_color = severity_colors.get(issue.severity, "#6c757d")
-            
-            html += f"""
-    <div class="issue {severity_class}">
-        <span class="severity" style="background: {severity_color}">{issue.severity.value}</span>
-        <h3>{issue.message}</h3>
-        <p><strong>规则:</strong> <code>{issue.rule}</code></p>
-        <p><strong>Schema:</strong> <code>{issue.schema_name}</code></p>
-        {f'<p><strong>字段:</strong> <code>{issue.field_name}</code></p>' if issue.field_name else ''}
-        <p><strong>建议:</strong> {issue.suggestion}</p>
-    </div>
-"""
-        
-        html += """
-</body>
-</html>
-"""
-        
-        return html
-    
-    def save(self, filepath: str, format: str = "markdown"):
-        """保存报告到文件"""
+        Args:
+            filepath: 文件路径
+            format: 格式 (markdown, json)
+            language: 语言 (zh, en)
+        """
         if format == "markdown":
-            content = self.to_markdown()
+            content = self.to_markdown(language)
             filepath = filepath if filepath.endswith('.md') else filepath + '.md'
         elif format == "json":
             content = self.to_json()
             filepath = filepath if filepath.endswith('.json') else filepath + '.json'
-        elif format == "html":
-            content = self.to_html()
-            filepath = filepath if filepath.endswith('.html') else filepath + '.html'
         else:
             raise ValueError(f"不支持的格式: {format}")
         
@@ -250,8 +256,8 @@ class ContractReporter:
         
         return filepath
     
-    def _get_severity_label(self, severity: Severity) -> str:
-        """获取严重级别标签"""
+    def _get_severity_label_zh(self, severity: Severity) -> str:
+        """获取中文严重级别标签"""
         labels = {
             Severity.CRITICAL: "🔴 严重 (CRITICAL)",
             Severity.HIGH: "🟠 高 (HIGH)",
@@ -259,3 +265,32 @@ class ContractReporter:
             Severity.LOW: "🔵 低 (LOW)"
         }
         return labels.get(severity, severity.value)
+    
+    def _get_severity_label_en(self, severity: Severity) -> str:
+        """获取英文严重级别标签"""
+        labels = {
+            Severity.CRITICAL: "🔴 CRITICAL",
+            Severity.HIGH: "🟠 HIGH",
+            Severity.MEDIUM: "🟡 MEDIUM",
+            Severity.LOW: "🔵 LOW"
+        }
+        return labels.get(severity, severity.value)
+
+
+# 便捷函数
+def generate_markdown_report(report: ContractReport, language: str = "zh") -> str:
+    """便捷函数：生成 Markdown 报告"""
+    reporter = ContractReporter(report)
+    return reporter.to_markdown(language)
+
+
+def generate_json_report(report: ContractReport) -> str:
+    """便捷函数：生成 JSON 报告"""
+    reporter = ContractReporter(report)
+    return reporter.to_json()
+
+
+def save_report(report: ContractReport, filepath: str, format: str = "markdown", language: str = "zh"):
+    """便捷函数：保存报告"""
+    reporter = ContractReporter(report)
+    return reporter.save(filepath, format, language)

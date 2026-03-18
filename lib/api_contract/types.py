@@ -1,6 +1,6 @@
 """
-BMAD-Fullstack API Contract Types
-核心数据类型定义 - 统一前后端 Schema 表示
+BMAD-EVO API Contract Types
+Phase 2 MVP - 核心数据类型定义
 """
 
 from dataclasses import dataclass, field
@@ -11,9 +11,9 @@ from enum import Enum
 class Severity(str, Enum):
     """问题严重级别"""
     CRITICAL = "CRITICAL"  # 必须修复，阻断流程
-    HIGH = "HIGH"          # 应该修复，影响功能
-    MEDIUM = "MEDIUM"      # 建议修复，影响体验
-    LOW = "LOW"            # 可选修复，优化项
+    HIGH = "HIGH"          # 应该修复
+    MEDIUM = "MEDIUM"      # 建议修复
+    LOW = "LOW"            # 可选优化
 
 
 class FieldType(str, Enum):
@@ -27,36 +27,31 @@ class FieldType(str, Enum):
     ENUM = "enum"
     ANY = "any"
     NULL = "null"
-    DATE = "date"
-    DATETIME = "datetime"
-    UUID = "uuid"
-    EMAIL = "email"
-    URL = "url"
+    OPTIONAL = "optional"
+    UNION = "union"
 
 
 @dataclass
 class FieldInfo:
-    """字段信息（语言无关的统一表示）"""
+    """字段信息（统一前后端表示）"""
     name: str
     field_type: FieldType
+    original_type: str = ""  # 原始类型字符串
     required: bool = True
     nullable: bool = False
     default: Any = None
     description: str = ""
-    
-    # 复杂类型
     enum_values: Optional[List[Any]] = None
-    nested_schema: Optional['NormalizedSchema'] = None
-    array_item_type: Optional['FieldInfo'] = None
-    generic_params: Optional[List['FieldInfo']] = None
     
     # 来源信息
     source_file: str = ""
     source_line: int = 0
     source_language: str = ""  # "python" or "typescript"
     
-    # 原始类型（用于调试）
-    original_type: str = ""  # 原始类型字符串
+    def __post_init__(self):
+        """初始化后处理"""
+        if not self.original_type:
+            self.original_type = self.field_type.value
 
 
 @dataclass
@@ -84,6 +79,10 @@ class NormalizedSchema:
     def get_field_names(self) -> List[str]:
         """获取所有字段名"""
         return list(self.fields.keys())
+    
+    def has_field(self, name: str) -> bool:
+        """检查是否存在字段"""
+        return name in self.fields
 
 
 @dataclass
@@ -97,13 +96,33 @@ class ContractIssue:
     schema_name: str
     field_name: Optional[str] = None
     
-    # 上下文
-    backend_info: Optional[FieldInfo] = None
-    frontend_info: Optional[FieldInfo] = None
+    # 详细信息
+    detail: str = ""
+    backend_value: str = ""  # 后端的定义
+    frontend_value: str = ""  # 前端的定义
     
     # 修复建议
     suggestion: str = ""
-    fix_example: Optional[str] = None
+    
+    # 位置信息
+    backend_file: str = ""
+    backend_line: int = 0
+    frontend_file: str = ""
+    frontend_line: int = 0
+    
+    def to_dict(self) -> dict:
+        """转换为字典"""
+        return {
+            'severity': self.severity.value,
+            'rule': self.rule,
+            'message': self.message,
+            'schema_name': self.schema_name,
+            'field_name': self.field_name,
+            'detail': self.detail,
+            'backend_value': self.backend_value,
+            'frontend_value': self.frontend_value,
+            'suggestion': self.suggestion,
+        }
 
 
 @dataclass
@@ -111,24 +130,35 @@ class ContractReport:
     """契约检查报告"""
     passed: bool
     score: float  # 0-100
+    total_checks: int = 0
+    passed_checks: int = 0
     issues: List[ContractIssue] = field(default_factory=list)
-    summary: str = ""
     
-    # 统计
-    total_schemas: int = 0
+    # 统计信息
+    backend_schemas_count: int = 0
+    frontend_schemas_count: int = 0
     matched_schemas: int = 0
-    mismatched_schemas: int = 0
+    fields_checked: int = 0
+    
+    # 总结
+    summary: str = ""
+    recommendations: List[str] = field(default_factory=list)
     
     # 时间戳
     timestamp: str = field(default_factory=lambda: __import__('datetime').datetime.now().isoformat())
     
-    def get_critical_issues(self) -> List[ContractIssue]:
-        """获取关键问题"""
-        return [i for i in self.issues if i.severity == Severity.CRITICAL]
+    def has_critical_issues(self) -> bool:
+        """是否有严重问题"""
+        return any(i.severity == Severity.CRITICAL for i in self.issues)
     
-    def get_high_issues(self) -> List[ContractIssue]:
-        """获取高优先级问题"""
-        return [i for i in self.issues if i.severity == Severity.HIGH]
+    def has_blocking_issues(self) -> bool:
+        """是否有阻断流程的问题"""
+        return self.has_critical_issues() or \
+               any(i.severity == Severity.HIGH for i in self.issues)
+    
+    def get_issues_by_severity(self, severity: Severity) -> List[ContractIssue]:
+        """按严重级别获取问题"""
+        return [i for i in self.issues if i.severity == severity]
     
     def get_issues_by_schema(self, schema_name: str) -> List[ContractIssue]:
         """获取特定 Schema 的问题"""
@@ -136,84 +166,48 @@ class ContractReport:
 
 
 @dataclass
-class ProjectConfig:
-    """项目配置"""
-    project_name: str
-    project_type: str = "fullstack"
-    
-    # 后端配置
-    backend_framework: str = "fastapi"  # fastapi, flask, django
-    backend_schema_path: str = ""
-    backend_main_file: str = ""
-    
-    # 前端配置
-    frontend_framework: str = "react"  # react, vue, nextjs
-    frontend_type_path: str = ""
-    frontend_api_client_path: str = ""
-    
-    # 契约检查配置
-    check_field_names: bool = True
-    check_field_types: bool = True
-    check_required: bool = True
-    check_enums: bool = True
-    type_strictness: str = "strict"  # strict | loose
-    
-    # 忽略规则
-    ignore_patterns: List[str] = field(default_factory=list)
-    ignore_schemas: List[str] = field(default_factory=list)
-
-
-@dataclass
 class TypeMappingRule:
     """类型映射规则"""
     python_type: str
     typescript_type: str
-    is_compatible: bool = True
     notes: str = ""
 
 
-# 默认类型映射表
-DEFAULT_TYPE_MAPPING: Dict[str, str] = {
-    # 基础类型
-    'str': 'string',
-    'int': 'number',
-    'float': 'number',
-    'bool': 'boolean',
-    'None': 'null',
-    'Any': 'any',
+@dataclass
+class ProjectConfig:
+    """项目配置"""
+    project_name: str = ""
+    naming_convention: str = "camelCase"  # camelCase | snake_case
+    strict_mode: bool = False
     
-    # 容器类型
-    'list': 'array',
-    'List': 'array',
-    'dict': 'object',
-    'Dict': 'object',
-    'tuple': 'array',
-    'Tuple': 'array',
-    'set': 'array',
-    'Set': 'array',
+    # 后端配置
+    backend_schema_path: str = ""
+    backend_framework: str = "fastapi"  # fastapi, flask, django
     
-    # 特殊类型
-    'datetime': 'string',  # ISO8601
-    'date': 'string',
-    'UUID': 'string',
-    'EmailStr': 'string',
-    'HttpUrl': 'string',
-    'Path': 'string',
+    # 前端配置
+    frontend_schema_path: str = ""
+    frontend_framework: str = "react"  # react, vue, nextjs
     
-    # Pydantic 特殊类型
-    'Optional': 'optional',
-    'Union': 'union',
-    'Literal': 'enum',
-}
-
-# TypeScript → Python 反向映射
-REVERSE_TYPE_MAPPING: Dict[str, str] = {
-    'string': 'str',
-    'number': 'float',  # 默认浮点数
-    'boolean': 'bool',
-    'null': 'None',
-    'any': 'Any',
-    'array': 'List',
-    'object': 'Dict',
-    'undefined': 'Optional',
-}
+    # 检查配置
+    check_field_names: bool = True
+    check_field_types: bool = True
+    check_required: bool = True
+    check_enums: bool = True
+    
+    # 忽略配置
+    ignored_fields: List[str] = field(default_factory=list)
+    ignored_schemas: List[str] = field(default_factory=list)
+    
+    # 阈值
+    min_score: float = 85.0
+    block_on_critical: bool = True
+    block_on_high: bool = False
+    
+    # 报告配置
+    report_format: str = "markdown"  # markdown, json, html
+    include_suggestions: bool = True
+    
+    def __post_init__(self):
+        """初始化后处理"""
+        if not self.ignored_fields:
+            self.ignored_fields = ['createdAt', 'updatedAt', '__typename']

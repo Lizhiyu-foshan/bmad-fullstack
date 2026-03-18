@@ -1,0 +1,24 @@
+# BMAD-Fullstack Dependencies
+
+# Python AST parsing (built-in)
+# ast module is part of standard library
+
+# YAML parsing
+PyYAML>=6.0
+
+# Type checking (optional but recommended)
+mypy>=1.0.0
+
+# Testing
+pytest>=7.0.0
+pytest-cov>=4.0.0
+
+# Code quality
+black>=23.0.0
+flake8>=6.0.0
+
+# Documentation
+mkdocs>=1.4.0
+
+# Note: TypeScript parsing requires Node.js and TypeScript npm package
+# npm install -g typescript

@@ -1,0 +1,185 @@
+#!/usr/bin/env python3
+"""
+BMAD-Fullstack CLI 入口
+全栈开发约束检查框架命令行工具
+"""
+
+import argparse
+import sys
+import os
+from pathlib import Path
+
+# 添加 lib 到路径
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'lib'))
+
+from api_contract.types import ProjectConfig
+from parsers.pydantic_parser import PydanticSchemaExtractor
+from parsers.typescript_parser import TypeScriptSchemaExtractor
+from api_contract.checker import ApiContractChecker
+from reporters.contract_reporter import ContractReporter
+
+
+def cmd_init(args):
+    """初始化项目命令"""
+    print(f"🚀 初始化 BMAD-Fullstack 项目: {args.name}")
+    print(f"模板: {args.template}")
+    
+    # 创建项目目录
+    project_dir = Path(args.name)
+    project_dir.mkdir(exist_ok=True)
+    
+    # 创建 .bmad 配置目录
+    bmad_dir = project_dir / '.bmad'
+    bmad_dir.mkdir(exist_ok=True)
+    
+    # 创建基础配置文件
+    config_content = f"""# BMAD-Fullstack 项目配置
+project:
+  name: "{args.name}"
+  type: "fullstack"
+
+backend:
+  framework: "{args.template.split('-')[0]}"
+  schema_path: "backend/app/schemas"
+  main_file: "backend/app/main.py"
+
+frontend:
+  framework: "{args.template.split('-')[1]}"
+  type_path: "frontend/src/types"
+  api_client_path: "frontend/src/api"
+
+contract:
+  check_field_names: true
+  check_field_types: true
+  check_required: true
+  check_enums: true
+  type_strictness: "strict"
+"""
+    
+    config_file = bmad_dir / 'project-charter.yaml'
+    with open(config_file, 'w', encoding='utf-8') as f:
+        f.write(config_content)
+    
+    print(f"✅ 项目初始化完成")
+    print(f"📁 配置文件: {config_file}")
+    print(f"\n下一步:")
+    print(f"  1. cd {args.name}")
+    print(f"  2. 配置 backend/frontend 路径")
+    print(f"  3. 运行: bmad-fullstack check")
+
+
+def cmd_check(args):
+    """检查契约命令"""
+    print("🔍 开始 API 契约检查...\n")
+    
+    # 加载配置
+    config_file = Path('.bmad/project-charter.yaml')
+    if not config_file.exists():
+        print("❌ 未找到配置文件: .bmad/project-charter.yaml")
+        print("请先运行: bmad-fullstack init")
+        sys.exit(1)
+    
+    # 解析配置（简化版，实际应该使用 YAML 解析）
+    config = ProjectConfig(
+        project_name="default",
+        backend_schema_path="backend/app/schemas",
+        frontend_type_path="frontend/src/types",
+        check_field_names=True,
+        check_field_types=True,
+        check_required=True,
+        type_strictness="strict"
+    )
+    
+    # 提取后端 Schema
+    print("📦 提取后端 Schema...")
+    backend_extractor = PydanticSchemaExtractor(config)
+    backend_schemas = backend_extractor.extract_all()
+    print(f"   找到 {len(backend_schemas)} 个 Schema")
+    
+    # 提取前端类型
+    print("🎨 提取前端类型...")
+    frontend_extractor = TypeScriptSchemaExtractor(config)
+    frontend_schemas = frontend_extractor.extract_all()
+    print(f"   找到 {len(frontend_schemas)} 个类型")
+    
+    # 检查契约
+    print("\n🔎 检查契约一致性...")
+    checker = ApiContractChecker(config)
+    report = checker.check_contract(backend_schemas, frontend_schemas)
+    
+    # 输出结果
+    print(f"\n{'='*60}")
+    print(f"检查结果: {'✅ 通过' if report.passed else '❌ 未通过'}")
+    print(f"契约得分: {report.score}/100")
+    print(f"{'='*60}\n")
+    
+    # 生成报告
+    reporter = ContractReporter(report)
+    
+    if args.format == "markdown":
+        output = reporter.to_markdown()
+    elif args.format == "json":
+        output = reporter.to_json()
+    elif args.format == "html":
+        output = reporter.to_html()
+    else:
+        output = reporter.to_markdown()
+    
+    if args.output:
+        filepath = reporter.save(args.output, args.format)
+        print(f"📄 报告已保存: {filepath}")
+    else:
+        print(output)
+    
+    # CI 模式退出码
+    if args.ci and not report.passed:
+        sys.exit(1)
+
+
+def cmd_version(args):
+    """版本命令"""
+    print("BMAD-Fullstack v1.0.0-alpha")
+    print("全栈开发约束检查框架")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog='bmad-fullstack',
+        description='BMAD-Fullstack: 全栈开发约束检查框架'
+    )
+    
+    subparsers = parser.add_subparsers(dest='command', help='可用命令')
+    
+    # init 命令
+    init_parser = subparsers.add_parser('init', help='初始化项目')
+    init_parser.add_argument('--template', default='fastapi-react',
+                            choices=['fastapi-react', 'fastapi-vue', 'django-react', 'django-vue'],
+                            help='项目模板')
+    init_parser.add_argument('--name', required=True, help='项目名称')
+    init_parser.set_defaults(func=cmd_init)
+    
+    # check 命令
+    check_parser = subparsers.add_parser('check', help='检查 API 契约')
+    check_parser.add_argument('--format', default='markdown',
+                             choices=['markdown', 'json', 'html'],
+                             help='报告格式')
+    check_parser.add_argument('--output', '-o', help='输出文件路径')
+    check_parser.add_argument('--ci', action='store_true',
+                             help='CI 模式（非交互，失败时返回非零退出码）')
+    check_parser.set_defaults(func=cmd_check)
+    
+    # version 命令
+    version_parser = subparsers.add_parser('version', help='查看版本')
+    version_parser.set_defaults(func=cmd_version)
+    
+    args = parser.parse_args()
+    
+    if args.command is None:
+        parser.print_help()
+        sys.exit(1)
+    
+    args.func(args)
+
+
+if __name__ == '__main__':
+    main()

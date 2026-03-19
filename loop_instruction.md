@@ -1,6 +1,6 @@
 # BMAD-Fullstack 闭环管理手册 (loop_instruction.md)
 
-**版本**: v1.0  
+**版本**: v1.1  
 **用途**: 全栈开发项目闭环管理流程  
 **核心目标**: 确保前后端契约一致性，防止API不一致问题流入生产环境
 
@@ -470,25 +470,303 @@ bmad-fullstack check --ci --strict
 
 ---
 
-## 10. 附录
+# 附录A：开发者快速参考
 
-### 10.1 相关文档
+## A.1 完整迭代流程示例
+
+### 阶段0: 需求输入与评估
+
+```yaml
+# .bmad/features/feature-XXX.yaml
+feature:
+  id: "FEAT-001"
+  name: "用户认证系统"
+  status: "ready"
+  
+  description: |
+    实现用户注册、登录、JWT Token 认证
+  
+  api_changes:
+    new_schemas:
+      - name: "UserRegister"
+        fields:
+          username: string (required, 3-50字符)
+          email: string (required, email格式)
+          password: string (required, 6-20字符)
+      
+      - name: "AuthResponse"
+        fields:
+          access_token: string (required)
+          token_type: string (default: "bearer")
+          expires_in: integer (required)
+  
+  impact:
+    backend:
+      - 新增 auth 模块
+      - 新增 JWT 依赖
+    frontend:
+      - 新增登录页面
+      - 新增注册页面
+```
+
+### 第1步：后端开发 + 审计 + 测试
+
+```python
+# backend/app/schemas/auth.py
+from pydantic import BaseModel, EmailStr, Field, ValidationError
+from fastapi import HTTPException
+
+class UserRegister(BaseModel):
+    """用户注册请求"""
+    username: str = Field(..., min_length=3, max_length=50)
+    email: EmailStr
+    password: str = Field(..., min_length=6, max_length=20)
+    
+    @validator('username')
+    def validate_username(cls, v):
+        if not v.isalnum():
+            raise ValueError('用户名只能包含字母和数字')
+        return v
+
+# 路由中添加异常处理
+@router.post("/auth/register")
+async def register(user: UserRegister):
+    try:
+        return AuthResponse(access_token="xxx", expires_in=3600)
+    except ValidationError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        logger.error(f"注册失败: {e}")
+        raise HTTPException(status_code=500, detail="内部服务器错误")
+```
+
+**审计**：
+```bash
+bmad-evo audit --file backend/app/schemas/auth.py
+```
+
+**测试**：
+```python
+# backend/tests/test_auth.py
+import pytest
+from app.schemas.auth import UserRegister
+
+def test_user_register_schema():
+    """测试用户注册 Schema"""
+    data = {
+        "username": "testuser",
+        "email": "test@example.com",
+        "password": "123456"
+    }
+    user = UserRegister(**data)
+    assert user.username == "testuser"
+    
+    # 边界情况
+    with pytest.raises(ValueError):
+        UserRegister(username="ab", email="test@example.com", password="123456")
+```
+
+### 第2步：生成前端类型 + 前端开发
+
+```bash
+bmad-fullstack generate-ts \
+  --input backend/app/schemas \
+  --output frontend/src/types/api.ts
+```
+
+```tsx
+// frontend/src/pages/Register.tsx
+import { useState } from 'react';
+import { UserRegister } from '../types/api';
+import { authApi } from '../api/auth';
+
+export function RegisterPage() {
+  const [form, setForm] = useState<UserRegister>({
+    username: '',
+    email: '',
+    password: '',
+  });
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const response = await authApi.register(form);
+    localStorage.setItem('token', response.accessToken);
+  };
+
+  return (
+    <form onSubmit={handleSubmit}>
+      <input
+        value={form.username}
+        onChange={e => setForm({...form, username: e.target.value})}
+        placeholder="用户名"
+      />
+      <button type="submit">注册</button>
+    </form>
+  );
+}
+```
+
+### 第3步：契约一致性检查
+
+```bash
+bmad-fullstack check --strict
+```
+
+### 第4步：集成测试 + 联调
+
+```python
+# backend/tests/test_integration_auth.py
+def test_register_and_login():
+    """测试注册和登录流程"""
+    # 1. 注册
+    register_data = {
+        "username": "testuser",
+        "email": "test@example.com",
+        "password": "123456"
+    }
+    response = client.post("/api/auth/register", json=register_data)
+    assert response.status_code == 200
+    
+    # 2. 登录
+    login_data = {
+        "email": "test@example.com",
+        "password": "123456"
+    }
+    response = client.post("/api/auth/login", json=login_data)
+    assert response.status_code == 200
+```
+
+## A.2 Bug修复闭环流程
+
+```
+发现 Bug
+    ↓
+┌────────────────────────────────────────────────────────┐
+│  分类 Bug 类型                                          │
+│  1. 契约不一致 → 修改 Schema + 重新生成                  │
+│  2. 后端逻辑错误 → 修改后端 + 重新审计 + 测试             │
+│  3. 前端逻辑错误 → 修改前端 + 重新审计                   │
+│  4. 需求理解错误 → 更新契约 + 重新开发                   │
+└────────────────────────────────────────────────────────┘
+    ↓
+执行修复
+    ↓
+重新执行完整的迭代循环
+    ↓
+✅ 关闭 Bug
+```
+
+### Bug修复示例
+
+```bash
+# Bug 报告: 注册时用户名可以包含特殊字符
+
+# 1. 分析: 后端验证不完善（类型2 Bug）
+
+# 2. 修改后端 Schema
+# backend/app/schemas/auth.py
+class UserRegister(BaseModel):
+    username: str = Field(
+        ..., 
+        min_length=3, 
+        max_length=50,
+        pattern=r'^[a-zA-Z0-9_]+$'
+    )
+
+# 3. 重新审计
+bmad-evo audit --file backend/app/schemas/auth.py
+
+# 4. 重新测试
+pytest backend/tests/test_auth.py -v
+
+# 5. 重新生成前端类型
+bmad-fullstack generate-ts --input backend/app/schemas --output frontend/src/types/api.ts
+
+# 6. 重新检查契约
+bmad-fullstack check --strict
+
+# 7. 集成测试
+pytest backend/tests/test_integration_auth.py -v
+
+# 8. 联调验证
+```
+
+## A.3 日常开发命令速查表
+
+```bash
+# ========== 日常开发迭代 ==========
+
+# 1. 拉取最新代码
+git pull origin main
+
+# 2. 查看待办需求
+cat .bmad/features/feature-XXX.yaml
+
+# 3. 开始开发前：检查当前契约状态
+bmad-fullstack check --backend backend/app/schemas
+
+# 4. 后端开发...
+vim backend/app/schemas/xxx.py
+
+# 5. 后端开发完成：审计 + 测试
+bmad-evo audit --file backend/app/schemas/xxx.py
+pytest backend/tests/test_xxx.py -v
+
+# 6. 生成前端类型
+bmad-fullstack generate-ts \
+  --input backend/app/schemas \
+  --output frontend/src/types/api.ts
+
+# 7. 前端开发...
+vim frontend/src/pages/Xxx.tsx
+
+# 8. 前端开发完成：审计
+cd frontend && npx tsc --noEmit && npm run lint
+
+# 9. 最终契约检查
+bmad-fullstack check --strict
+
+# 10. 集成测试
+pytest backend/tests/test_integration_xxx.py -v
+
+# 11. 提交代码
+git add .
+git commit -m "feat: 实现 XXX 功能
+
+- 新增 Xxx Schema
+- 实现 API 端点
+- 前端页面开发
+- 通过 BMAD-EVO 审计
+- 通过 BMAD-Fullstack 契约检查"
+
+# 12. CI 自动执行审计和测试
+git push origin feature/xxx
+```
+
+## A.4 关键原则速记
+
+| 原则 | 说明 |
+|------|------|
+| **契约优先** | 任何需求变更先更新契约文档，再开发 |
+| **审计驱动** | 后端代码必须通过 BMAD-EVO 审计（85分） |
+| **类型生成** | 前端类型必须从后端自动生成，禁止手撕 |
+| **一致性检查** | 每次提交前必须检查前后端契约一致性 |
+| **测试覆盖** | 每个 Schema 必须有单元测试，每个 API 必须有集成测试 |
+| **Bug闭环** | 发现 Bug → 分类 → 修复 → 重新走完整流程 |
+
+---
+
+# 附录B：相关文档
 
 - [setting.md](./setting.md) - 配置手册
 - [SKILL.md](./SKILL.md) - 框架功能说明
 - BMAD-EVO文档（AST审计引擎）
 
-### 10.2 版本历史
-
-- v1.0 (2026-03-19): 初始版本，建立闭环管理流程
-
-### 10.3 反馈渠道
-
-- 问题反馈: GitHub Issues
-- 功能建议: GitHub Discussions
-- 紧急联系: tech-lead@example.com
-
 ---
+
+**版本历史**:
+- v1.1 (2026-03-19): 整合开发者实操附录，添加完整代码示例和命令速查表
+- v1.0 (2026-03-19): 初始版本，建立闭环管理流程
 
 **核心理念**: 
 > "契约即法律，检查即保险，闭环即质量。"
